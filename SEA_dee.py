@@ -1,0 +1,207 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Aug 12 16:05:57 2023
+
+@author: dsh19
+"""
+
+
+import numpy as np
+import pandas as pd
+import statsmodels
+import statsmodels.api as sm
+import math
+from scipy.stats import zscore
+import xlrd
+import matplotlib.pyplot as plt
+
+###数据读取###
+#读取EXCEL数据并存入numpy数组
+DATA = xlrd.open_workbook('F:/Ddataprocess/火山SEA test-20230701.xlsx')
+sheet1 = DATA.sheets()[0]
+sheet2 = DATA.sheets()[1]
+'a = [i for i in a if i != '']' #列表剔除含空值的字符串
+
+###数据提取###
+pdo = np.array([i for i in sheet2.col_values(2)[1:] if i !=''], dtype = np.float64)
+event = (np.array([i for i in sheet1.col_values(2)[1:] if i !=''] , dtype = np.float64)) -1
+percentile = [5,95]
+
+ac_r = sm.tsa.acf(pdo, nlags = 1)
+b = round(2 * (-1 / math.log(ac_r[1])))
+before = 5
+after = 10
+nboot = 10000
+
+ev = event + before
+data = np.concatenate(([np.nan] * before, pdo, [np.nan] * after))
+data = data.reshape(len(data),1)
+###定义事件矩阵
+data_matrix = np.zeros(shape = (before + after + 1,len(ev)))
+for i in range(int(len(ev))):
+    data_matrix[:,i] = data.flatten()[int(ev[i] - before) : int(ev[i] + after + 1)]
+    
+data_matrix = data_matrix - data_matrix[:5].mean(axis = 0) ### 对事件爆发前的五年求平均，然后整体距平距这个平
+SEA_value = data_matrix.mean(axis = 1)
+###SEA计算完毕###
+###下面开始显著性检验###
+
+
+
+
+###普通bootstrap### boot的时候 没 带火山年份,但是生成的矩阵时候，火山那一年是算进去的; 
+data_matrix_nonvoc = np.delete(data_matrix,5,axis = 0)
+data_matrix_voc_bootstrap = np.empty(shape=(nboot,16,10))
+for k in range(nboot):
+    for i in range(10):
+        for j in range(16):
+             data_matrix_voc_bootstrap[k,j,i] = np.random.choice(data_matrix_nonvoc[:,i],1)
+
+SEA_value_95 = np.percentile(data_matrix_voc_bootstrap.mean(axis = 2),95,axis = 0)###合成平均值的置信区间95
+SEA_value_5  = np.percentile(data_matrix_voc_bootstrap.mean(axis = 2),5, axis = 0)###合成平均值的置信区间5
+time_before_after = np.arange(-5,11)
+
+plt.plot(time_before_after,SEA_value)
+plt.plot(time_before_after,SEA_value_95)
+plt.plot(time_before_after,SEA_value_5)
+###结束####
+
+
+
+###普通bootstrap### boot的时候 带 火山年份,但是生成的矩阵时候，火山那一年是算进去的; 
+data_matrix_nonvoc = np.delete(data_matrix,5,axis = 0)
+data_matrix_voc_bootstrap = np.empty(shape=(nboot,16,10))
+for k in range(nboot):
+    for i in range(10):
+        for j in range(16):
+             data_matrix_voc_bootstrap[k,j,i] = np.random.choice(data_matrix[:,i],1)
+
+SEA_value_95 = np.percentile(data_matrix_voc_bootstrap.mean(axis = 2),95,axis = 0)###合成平均值的置信区间95
+SEA_value_5  = np.percentile(data_matrix_voc_bootstrap.mean(axis = 2),5, axis = 0)###合成平均值的置信区间5
+time_before_after = np.arange(-5,11)
+
+plt.plot(time_before_after,SEA_value)
+plt.plot(time_before_after,SEA_value_95)
+plt.plot(time_before_after,SEA_value_5)
+###结束####
+
+
+
+###定义滑块函数###
+def block_bootstrap(data,blocken,Nb):
+    # 进行块自助法
+    bootstrap_sample = np.zeros((Nb, len(data)))
+    for i in range(Nb):
+        # 随机生成块索引
+        block_indices = np.random.choice(np.arange(len(data) - blocken + 1), size=len(data) // blocken, replace=True)
+        # 构建自助样本
+        for j, index in enumerate(block_indices):
+            bootstrap_sample[i, j * blocken:j * blocken + blocken] = data[index:index + blocken]
+    return bootstrap_sample
+###  滑块函数#####
+
+
+###block-bootstrap###  
+def block_bootstrap(X,blocken,Nb):
+#X为分析数据，blocken为滑块长度，Nb为重复抽样次数
+    nt = len(X)
+    ns = math.floor(nt/blocken)
+    Xb = np.empty((nt,Nb))
+    for i in range(Nb):
+        sample = np.random.choice(ns,ns)
+        for  j in range(ns):
+            Xb[j*blocken : (j + 1) * blocken, i] = X[sample[j] * blocken : (sample[j] + 1) * blocken].T # 左边应该从第零行开始  
+            
+    return Xb
+### 因为滑块和序列长度不成比例，所以最后一年数据有问题，但是可以考虑虚拟延长序列或者 多添加几年的向后窗口。
+
+
+
+
+
+
+###如果不抽取火山年份 ###
+nboot = 10000
+data_matrix_nonvoc = np.delete(data_matrix,5,axis = 0)
+###因为 滑块和 序列长度不成整数比例，因此构造虚拟序列
+data_matrix_pseudo = np.vstack((np.full((b, len(ev)), -999), data_matrix_nonvoc, np.full((b, len(ev)), -999)))
+###开始滑块自助###
+
+n = math.ceil((before + after + 1 + (b * 2))/b)###能抽几个滑块
+block_bootstrap_result = np.zeros((before + after + 1, nboot))  ###存放所有bootstrap结果
+for i in range(nboot):
+    result_per_bootstrap = []             ###存放每一次bootstrap的结果  
+    result_per_bootstrap_value = np.zeros((before + after + 1, data_matrix_pseudo.shape[1])) ###从每一次bootstrap的结果中提取合适的序列长度
+                                                     
+    for j in range(data_matrix_pseudo.shape[1]):   ### 依次抽取每次事件的循环
+        q = int(np.trunc(data_matrix_pseudo.shape[0]) - b) +1  ### 抽取思路为 每次抽取b,
+        blocken_sample = np.zeros(shape = (b,q))    ###弄一个矩阵存放每次抽取的滑块，因为滑块长度为5，所以25行能抽取21次，也就是q次
+        for k in range(q):
+            blocken_sample[:,k] = data_matrix_pseudo[k : k+b, j]
+                 
+        index = np.random.choice(np.arange(1,q-1,1), size=n * 2, replace=True) ###生成抽取数据的索引，因为抽取滑块的第一列和最后一列是-999，因此我们进行随机索引生成的时候不算这两列
+        event_series_bootstrap = (blocken_sample[:,index]).reshape(n * 2 *b,1)###按照索引最终确定抽取后的每次（第j次）事件的序列
+        event_series_bootstrap[event_series_bootstrap == -999] = np.nan###将数据中的-999变nan值
+        event_series_bootstrap = event_series_bootstrap[~np.isnan(event_series_bootstrap)] ###将nan值消灭掉
+        result_per_bootstrap.append(event_series_bootstrap)
+                
+        result_per_bootstrap_value[:, j] = result_per_bootstrap[j][:before + after + 1] ###取每个序列中的前16个
+
+
+    block_bootstrap_result[:,i] = result_per_bootstrap_value.mean(axis = 1)  ###10个事件的结果平均起来
+    
+     
+SEA_means = data_matrix.mean(axis = 1)           
+SEA_prctiles = np.zeros((block_bootstrap_result.shape[0], len(percentile)))       
+for i, prctile_value in enumerate(percentile):
+    for j in range(block_bootstrap_result.shape[0]):
+        SEA_prctiles[j, i] = np.percentile(block_bootstrap_result[:, j], prctile_value)
+
+time_before_after = np.arange(-5,11)
+plt.plot(time_before_after,SEA_means)
+plt.plot(time_before_after,SEA_prctiles)
+### 结束###
+
+
+
+###如果抽取火山年份 ###
+nboot = 100000
+data_matrix_nonvoc = np.delete(data_matrix,5,axis = 0)
+###因为 滑块和 序列长度不成整数比例，因此构造虚拟序列
+data_matrix_pseudo = np.vstack((np.full((b, len(ev)), -999), data_matrix, np.full((b, len(ev)), -999)))
+###开始滑块自助###
+
+n = math.ceil((before + after + 1 + (b * 2))/b)###能抽几个滑块
+block_bootstrap_result = np.zeros((before + after + 1, nboot))  ###存放所有bootstrap结果
+for i in range(nboot):
+    result_per_bootstrap = []             ###存放每一次bootstrap的结果  
+    result_per_bootstrap_value = np.zeros((before + after + 1, data_matrix_pseudo.shape[1])) ###从每一次bootstrap的结果中提取合适的序列长度
+                                                     
+    for j in range(data_matrix_pseudo.shape[1]):   ### 依次抽取每次事件的循环
+        q = int(np.trunc(data_matrix_pseudo.shape[0]) - b) +1  ### 抽取思路为 每次抽取b,
+        blocken_sample = np.zeros(shape = (b,q))    ###弄一个矩阵存放每次抽取的滑块，因为滑块长度为5，所以25行能抽取21次，也就是q次
+        for k in range(q):
+            blocken_sample[:,k] = data_matrix_pseudo[k : k+b, j]
+                 
+        index = np.random.choice(np.arange(1,q-1,1), size=n * 2, replace=True) ###生成抽取数据的索引，因为抽取滑块的第一列和最后一列是-999，因此我们进行随机索引生成的时候不算这两列
+        event_series_bootstrap = (blocken_sample[:,index]).reshape(n * 2 *b,1)###按照索引最终确定抽取后的每次（第j次）事件的序列
+        event_series_bootstrap[event_series_bootstrap == -999] = np.nan###将数据中的-999变nan值
+        event_series_bootstrap = event_series_bootstrap[~np.isnan(event_series_bootstrap)] ###将nan值消灭掉
+        result_per_bootstrap.append(event_series_bootstrap)
+                
+        result_per_bootstrap_value[:, j] = result_per_bootstrap[j][:before + after + 1] ###取每个序列中的前16个
+
+
+    block_bootstrap_result[:,i] = result_per_bootstrap_value.mean(axis = 1)  ###10个事件的结果平均起来
+    
+     
+SEA_means = data_matrix.mean(axis = 1)           
+SEA_prctiles = np.zeros((block_bootstrap_result.shape[0], len(percentile)))       
+for i, prctile_value in enumerate(percentile):
+    for j in range(block_bootstrap_result.shape[0]):
+        SEA_prctiles[j, i] = np.percentile(block_bootstrap_result[:, j], prctile_value)
+
+time_before_after = np.arange(-5,11)
+plt.plot(time_before_after,SEA_means)
+plt.plot(time_before_after,SEA_prctiles)
+###结束###
